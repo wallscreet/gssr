@@ -3,13 +3,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 device = "cuda"
 model_path = "ibm-granite/granite-4.0-h-1b"
+# model_path = "ibm-granite/granite-4.0-h-350m"
+# model_path = "ibm-granite/granite-4.0-h-micro"
 
 print("Loading tokenizer and model...")
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
     device_map=device,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
 )
 model.eval()
 
@@ -145,33 +147,33 @@ try:
         mamba_states = getattr(cache, states_attr)
         print(f"\nFound '{states_attr}': type={type(mamba_states)}, length={len(mamba_states) if hasattr(mamba_states, '__len__') else 'N/A'}")
         if isinstance(mamba_states, (list, tuple)) and len(mamba_states) > 0:
-            for i, s in enumerate(mamba_states[:5]):
+            for i, s in enumerate(mamba_states):
                 if isinstance(s, torch.Tensor):
                     print(f"  Mamba state {i}: shape={s.shape}, mean={s.mean().item():.4f}")
 except:
     pass
 
-try:
-    print("\nTrying cache[0] access...")
-    layer0_cache = cache[0]
-    print(f"cache[0] type: {type(layer0_cache)}")
-    if isinstance(layer0_cache, tuple):
-        for j, sub in enumerate(layer0_cache):
-            if isinstance(sub, torch.Tensor):
-                print(f"  sub-{j}: shape={sub.shape}, mean={sub.mean().item():.4f}")
-except Exception as e:
-    print(f"cache[0] failed: {e}")
+# try:
+#     print("\nTrying cache[0] access...")
+#     layer0_cache = cache[0]
+#     print(f"cache[0] type: {type(layer0_cache)}")
+#     if isinstance(layer0_cache, tuple):
+#         for j, sub in enumerate(layer0_cache):
+#             if isinstance(sub, torch.Tensor):
+#                 print(f"  sub-{j}: shape={sub.shape}, mean={sub.mean().item():.4f}")
+# except Exception as e:
+#     print(f"cache[0] failed: {e}")
 
 
-print("\nExtracting SSM states from cache...")
-cache = gen_outputs.past_key_values
-if hasattr(cache, 'ssm_states'):
-    ssm_list = cache.ssm_states
-    print(f"Total SSM entries: {len(ssm_list)}")
+# print("\nExtracting SSM states from cache...")
+# cache = gen_outputs.past_key_values
+# if hasattr(cache, 'ssm_states'):
+#     ssm_list = cache.ssm_states
+#     print(f"Total SSM entries: {len(ssm_list)}")
     
-    last_ssm = ssm_list[-1]
-    print(f"Last SSM state shape: {last_ssm.shape}")
-    print(f"Mean: {last_ssm.mean().item():.4f}")
+#     last_ssm = ssm_list[-1]
+#     print(f"Last SSM state shape: {last_ssm.shape}")
+#     print(f"Mean: {last_ssm.mean().item():.4f}")
     
-    flattened = last_ssm.mean(dim=[1,2])
-    print(f"Flattened example: shape={flattened.shape}, mean={flattened.mean().item():.4f}")
+#     flattened = last_ssm.mean(dim=[1,2])
+#     print(f"Flattened example: shape={flattened.shape}, mean={flattened.mean().item():.4f}")

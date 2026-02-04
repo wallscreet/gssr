@@ -31,7 +31,7 @@ class GraniteSteerer:
             )
         return self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
 
-    def generate_steered(self, prompt, max_new_tokens=50, perturb_strength=0.05, target_layers=range(36, 39)):
+    def generate_steered(self, prompt, max_new_tokens=50, perturb_strength=0.05, target_layers=range(36, 40)):
         """Steered generation with perturbation on selected SSM layers."""
         inputs = self._prepare_inputs(prompt)
         
@@ -92,13 +92,13 @@ class GraniteSteerer:
 if __name__ == "__main__":
     steerer = GraniteSteerer()
     
-    prompt = "Please list one IBM Research laboratory located in the United States. You should only output its name and location."
+    prompt = "Why did the United States declare independence from Britain?"
     
     print("\nUnsteered output:")
     print(steerer.generate_unsteered(prompt))
     
     print("\nSteered output:")
-    print(steerer.generate_steered(prompt, perturb_strength=0.1))
+    print(steerer.generate_steered(prompt, perturb_strength=0.2, target_layers=range(36, 40)))
     
     # Cleanup
     if 'steerer' in globals():
