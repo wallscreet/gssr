@@ -1,5 +1,7 @@
+import copy
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 
 class GraniteSteerer:
     def __init__(self, model_path="ibm-granite/granite-4.0-h-1b", device="cuda"):
@@ -89,6 +91,68 @@ class GraniteSteerer:
         final_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
         return final_text
 
+    def find_high_leverage_layers(self, prompt, test_strength=0.1):
+        self.model.eval()
+        inputs = self._prepare_inputs(prompt)
+        
+        # Force the model to generate 1 token to initialize the hybrid cache properly
+        with torch.no_grad():
+            init_out = self.model.generate(
+                **inputs,
+                max_new_tokens=1,
+                use_cache=True,
+                return_dict_in_generate=True,
+            )
+        
+        # Extract the populated HybridMambaAttentionDynamicCache
+        cache = init_out.past_key_values
+        
+        # Safety check: Ensure the cache isn't None before proceeding
+        if cache is None:
+            raise ValueError("Cache failed to initialize. Ensure 'use_cache=True' is supported.")
+
+        # Get the baseline logits from the last position of the original sequence
+        with torch.no_grad():
+            baseline_out = self.model(**inputs, use_cache=True)
+        baseline_logits = baseline_out.logits[:, -1, :]
+        
+        influence_scores = []
+        
+        # Iterate specifically through ssm_states
+        for i in range(len(cache.ssm_states)):
+            target_ssm = cache.ssm_states[i]
+            
+            # Skip attention layers (empty states have 0 dimension in ssm_states)
+            if target_ssm.numel() == 0:
+                influence_scores.append(0.0)
+                continue
+                
+            # Create a deep copy to isolate perturbations
+            test_cache = copy.deepcopy(cache)
+            
+            # Nudge ONLY this specific layer
+            perturbation = torch.randn_like(test_cache.ssm_states[i]) * test_strength
+            test_cache.ssm_states[i].add_(perturbation)
+            
+            with torch.no_grad():
+                # Pass modified cache back; inputs should only be the last token or prompt
+                steered_out = self.model(
+                    input_ids=inputs.input_ids, 
+                    past_key_values=test_cache,
+                    use_cache=True
+                )
+            
+            divergence = torch.nn.functional.mse_loss(
+                steered_out.logits[:, -1, :], 
+                baseline_logits
+            ).item()
+            
+            influence_scores.append(divergence)
+            print(f"Layer {i} (SSM) Influence: {divergence:.6f}")
+
+        return influence_scores
+
+
 if __name__ == "__main__":
     steerer = GraniteSteerer()
     
@@ -98,7 +162,8 @@ if __name__ == "__main__":
     print(steerer.generate_unsteered(prompt))
     
     print("\nSteered output:")
-    print(steerer.generate_steered(prompt, perturb_strength=0.2, target_layers=range(36, 40)))
+    target_layers = [38]
+    print(steerer.generate_steered(prompt, perturb_strength=0.1, target_layers=target_layers))
     
     # Cleanup
     if 'steerer' in globals():
