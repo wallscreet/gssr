@@ -10,7 +10,7 @@ class GraniteSteerer:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             device_map=device,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
         self.model.eval()
         self.device = device
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     print(steerer.generate_unsteered(prompt))
     
     print("\nSteered output:")
-    target_layers = [38]
+    target_layers = [36, 37, 38]
     print(steerer.generate_steered(prompt, perturb_strength=0.1, target_layers=target_layers))
     
     # Cleanup
