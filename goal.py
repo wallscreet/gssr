@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from typing import Tuple, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from utils import debug_module, debug_tensor
+from utils import debug_module, debug_tensor, init_weights
 from config import CFG
 
 
@@ -16,8 +16,9 @@ class LBS(nn.Module):
             model_path,
             device_map=self.cfg.device,
             torch_dtype=self.cfg.d_type,
+            local_files_only=True
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
         self.device = self.cfg.device
 
         # SSM (GRU)
@@ -33,6 +34,8 @@ class LBS(nn.Module):
         # Shape: [latent_dim] -> [latent_dim * 2] (for mu and logvar)
         # torch.Size([32, 16])
         self.mlp_prior = nn.Linear(self.cfg.latent_dim, self.cfg.latent_dim * 2)
+        #! Init weights from utils
+        self.mlp_prior.apply(init_weights)
         self.mlp_prior = self.mlp_prior.to(self.device, self.cfg.d_type)
         debug_module(self.mlp_prior, "mlp_prior")
         
@@ -41,6 +44,8 @@ class LBS(nn.Module):
         # It corrects the prior based on what we just observed.
         # torch.Size([32, 33])
         self.mlp_post = nn.Linear(self.cfg.latent_dim * 2 + 1, self.cfg.latent_dim * 2)
+        #! New init weights from utils
+        self.mlp_post.apply(init_weights)
         self.mlp_post = self.mlp_post.to(self.device, self.cfg.d_type)
         debug_module(self.mlp_post, "mlp_post")
         
@@ -74,7 +79,7 @@ class LBS(nn.Module):
             [self.tokenizer.convert_tokens_to_ids(f"<SUM{i}>") for i in range(self.cfg.sum_tokens)],
             dtype=torch.long, device=self.device
         )
-        
+            
     def encode_text(self, text: str) -> torch.Tensor:
         """This method transforms a high-level text description into a compact semantic vector () that the Bayesian filter can digest. In this step, we are bridging the gap between raw text and our latent space. This is the **Observation Model** (or "Encoder") of our system.
         """
@@ -123,13 +128,15 @@ class LBS(nn.Module):
         prior = self.mlp_prior(h_t.squeeze(1))
 
         prior_mu, prior_logvar = prior.chunk(2, dim=-1)
-        prior_logvar = torch.clamp(prior_logvar, min=-10.0, max=2.0)
+        #! raise prior_logvar clamp min to -5, keep max @ 2
+        prior_logvar = torch.clamp(prior_logvar, min=-5.0, max=2.0)
         # GENERATE THE POSTERIOR (The "Fact-Check")
         # We concatenate history (h_t), numerical data (y_t), and semantic data (s_t).
         post_in = torch.cat([h_t.squeeze(1), y_t.unsqueeze(1), s_t], dim=-1)
         post = self.mlp_post(post_in)
         post_mu, post_logvar = post.chunk(2, dim=-1)
-        post_logvar = torch.clamp(post_logvar, min=-10.0, max=2.0)
+        #! raise post_logvar clamp min to -5
+        post_logvar = torch.clamp(post_logvar, min=-5.0, max=2.0)
         # THE REPARAMETERIZATION TRICK
         # We sample a specific latent vector (x_t) from the posterior distribution.
         # Using 'eps' (random noise) ensures we can still backpropagate through the mean/std.
@@ -153,7 +160,8 @@ class LBS(nn.Module):
         # PROJECT LATENT TO "SOFT PROMPT"
         # We take the 16-dim vector and expand it to [prefix_tokens, 1536].
         # This creates "pseudo-tokens" that represent our belief state.
-        prefix_emb = self.proj_state(x_t).view(1, self.cfg.prefix_tokens, -1)
+        #! exploding loss and kl div problem - lowering prefix_emb by an order of magnitude to observe consequence
+        prefix_emb = self.proj_state(x_t).view(1, self.cfg.prefix_tokens, -1) * 0.1
         # TOKENIZE AND EMBED THE TARGET TEXT
         prompt = f"Given this belief state, generate a textual forecast.\nDate: 2025-01-01\n"
         full_prompt = prompt + text
@@ -191,7 +199,10 @@ class LBS(nn.Module):
         free_nats = self.cfg.kl_free_nats * max(0.0, 1.0 - step / total_steps)
         # CLAMPING
         # We only penalize the model if the KL is GREATER than our allowed free nats.
-        return torch.clamp(kl - free_nats, min=0.0)
+        #return torch.clamp(kl - free_nats, min=0.0)
+        #! Try not penalizing the KL until its above a certain threshold 
+        #! This + initializing the dist weights with xavier normal caused exploding loss and kl. Try init dist zero plus this penalty
+        return torch.max(kl, torch.tensor(0.5, device=self.device))
 
     def training_step(self, y_t, text, x_prev, h_prev, step, total_steps):
         """
@@ -304,61 +315,81 @@ class GoalLBS(nn.Module):
         steered_mu = steered_mu * scale
         
         return steered_mu
-
-    def forward_step(self, y_t, text_t, x_prev, h_prev, x_goal, step, total_steps, training=True):
+    
+    #! -- NEW forward step from gemini recommendation
+    def forward_step(self, y_t, text_t, x_prev, h_prev, x_goal, step, total_steps, current_epoch_step=0, training=True):
         """
-        This method executes one temporal step of the model while applying the latent "nudge" toward the goal.
+        Executes one temporal step with latent "nudge" toward the goal and numerical stabilization.
         """
-        # SEMANTIC ENCODING
-        # The model looks at the current text and compresses it to a 16-dim observation.
+        # 1. SEMANTIC ENCODING
         s_t = self.lbs.encode_text(text_t)
 
-        # STATE TRANSITION (The "Mind" moves forward)
-        # We pass the previous sample through the GRU.
-        # h_t: [num_layers, batch, latent_dim]
+        # 2. STATE TRANSITION
         _, h_t = self.lbs.gru(x_prev.unsqueeze(1), h_prev)
         
-        # GENERATE RAW PRIOR
-        # Extract the top-layer hidden state and guess the next distribution.
+        # 3. GENERATE RAW PRIOR
         prior_latent = h_t[-1] 
         prior = self.lbs.mlp_prior(prior_latent)
         prior_mu, prior_logvar = prior.chunk(2, dim=-1)
+        
+        # STABILITY: Clamp log-variance to prevent division-by-zero in KL
+        prior_logvar = torch.clamp(prior_logvar, min=-5.0, max=2.0)
 
-        # APPLY THE STEERING (Crucial Step)
-        # We nudge the predicted mean toward x_goal.
-        # This modification is "recorded" in the gradient graph.
+        # 4. APPLY THE STEERING
         steered_mu = self.steer_prior(prior_mu, x_goal, step, total_steps)
 
-        # GENERATE POSTERIOR (The "Fact-Check")
-        # Combine: RNN Context (h_t) + Data (y_t) + Semantic Obs (s_t).
+        # 5. GENERATE POSTERIOR
         post_in = torch.cat([prior_latent, y_t, s_t], dim=-1)
         post = self.lbs.mlp_post(post_in)
         post_mu, post_logvar = post.chunk(2, dim=-1)
+        
+        # STABILITY: Clamp log-variance
+        post_logvar = torch.clamp(post_logvar, min=-5.0, max=2.0)
 
-        # REPARAMETERIZATION SAMPLE
-        # Sample the actual state x_t from the posterior.
+        # 6. REPARAMETERIZATION SAMPLE
         std = torch.exp(0.5 * post_logvar)
         eps = torch.randn_like(std)
         x_t = post_mu + eps * std
 
-        # LOSS CALCULATION
-        # Note: L_kl uses 'steered_mu'! This forces the model to 
-        # minimize the distance between its belief and the GOAL.
-        L_val = self.lbs.value_loss(x_t, y_t.mean(dim=-1)).mean()
-        L_text = self.lbs.text_loss(x_t, text_t).mean()
-        L_kl = self.lbs.kl_loss(steered_mu, prior_logvar, post_mu, post_logvar, step, total_steps).mean()
+        # 7. ANALYTICAL KL CALCULATION (More stable than sampling)
+        prior_var = torch.exp(prior_logvar)
+        post_var = torch.exp(post_logvar)
+        
+        # Distance between Steered Prior and actual Posterior
+        kl_div = 0.5 * torch.sum(
+            prior_logvar - post_logvar - 1.0 + 
+            (post_var + (post_mu - steered_mu)**2) / prior_var, 
+            dim=-1
+        )
 
-        # Combine with weight coefficients
+        # 8. LINEAR KL ANNEALING
+        # Ramp up alpha_kl over the first 500 steps to prevent 'KL Vanishing' or 'Explosion'
+        warmup_steps = 500 
+        anneal_ratio = min(1.0, current_epoch_step / warmup_steps)
+        effective_alpha_kl = self.lbs.cfg.alpha_kl * anneal_ratio
+
+        # 9. MULTI-OBJECTIVE LOSS
+        L_val = self.lbs.value_loss(x_t, y_t.mean(dim=-1)).mean()
+        
+        # STABILITY: Scale x_t down so it doesn't overwhelm the LLM's attention mechanism
+        L_text = self.lbs.text_loss(x_t * 0.1, text_t).mean()
+        
+        # Use the 'Hinge' loss to keep KL from hitting zero exactly
+        L_kl = torch.clamp(kl_div - self.lbs.cfg.kl_free_nats, min=0.5).mean()
+
         loss = (self.lbs.cfg.alpha_val * L_val +
                 self.lbs.cfg.alpha_text * L_text +
-                self.lbs.cfg.alpha_kl * L_kl)
+                effective_alpha_kl * L_kl)
 
-        # HAND-OFF
-        # If training, we return the attached tensors so gradients flow back 
-        # across time steps (BPTT).
         return (x_t if training else x_t.detach(), 
                 h_t if training else h_t.detach(), 
-                {'loss': loss, 'val': L_val.item(), 'text': L_text.item(), 'kl': L_kl.item()},
+                {
+                    'loss': loss, 
+                    'val': L_val.item(), 
+                    'text': L_text.item(), 
+                    'kl': L_kl.item(),
+                    'anneal': anneal_ratio
+                },
                 steered_mu)
 
     def generate_plan(self, x_final: torch.Tensor, steps_ahead: int = 5) -> str:

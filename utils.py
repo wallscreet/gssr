@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 def debug_module(module, name: str = "", enabled: bool = False):
     """Print shape, device, and dtype of a module's parameters."""
@@ -58,3 +59,18 @@ def debug_tensor(t, name=""):
         mean_str = "empty"
     
     print(f"DEBUG tensor {name}: shape={shape}, device={device}, dtype={dtype}, mean={mean_str}")
+
+
+# Added to init the weights of distribution heads to zero to start so hopefully the kl loss will start near zero.
+#! -- initializing weights to zero caused posterior collapse and caused the kl divergence to vanish
+#! -- added initializing weights with xavier_normal for testing
+#! -- -- xavier normal alone caused loss and kl to explode again
+#! -- back to zero init with new penalization on kl loss function - kl collapsed to max. (better results-keep for now)
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        # Initialize means to 0 and logvars to 0 (variance = 1)
+        #torch.nn.init.zeros_(m.weight)
+        # Xavier initialization breaks symmetry
+        torch.nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)

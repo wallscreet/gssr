@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 from goal import LBS, GoalLBS
 
+
 def run_test():
     print("--- Initializing Goal-Conditioned LBS Test Bench ---")
     
@@ -69,11 +70,11 @@ def run_test():
     gru_grad = lbs.gru.weight_hh_l0.grad
     
     if goal_enc_grad is not None and gru_grad is not None:
-        print("✅ Success: Gradients successfully propagated to Goal Encoder and GRU.")
+        print("   Success: Gradients successfully propagated to Goal Encoder and GRU.")
         print(f"   Goal Encoder Grad Norm: {goal_enc_grad.norm().item():.6f}")
         print(f"   GRU Grad Norm: {gru_grad.norm().item():.6f}")
     else:
-        print("❌ Error: Gradients are None. Check for accidental .detach() or no_grad() blocks.")
+        print("  Error: Gradients are None. Check for accidental .detach() or no_grad() blocks.")
 
     torch.nn.utils.clip_grad_norm_(goal_lbs.parameters(), max_norm=1.0)
     
@@ -88,7 +89,8 @@ def run_test():
         print(plan)
         print("-" * 30)
     except Exception as e:
-        print(f"❌ Planning Failed: {str(e)}")
+        print(f"  Planning Failed: {str(e)}")
+
 
 if __name__ == "__main__":
     run_test()
