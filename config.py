@@ -8,9 +8,9 @@ class CFG:
     prefix_tokens = 8             # projected state tokens
     lora_r = 8
     lora_alpha = 16
-    kl_free_nats = 2.5
+    kl_free_nats = 10
     alpha_val = 1.0
-    alpha_text = 0.1
-    alpha_kl = 1.0
+    alpha_text = 1.0
+    alpha_kl = .000001
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d_type = torch.bfloat16
