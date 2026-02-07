@@ -2,8 +2,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 device = "cuda"
-model_path = "ibm-granite/granite-4.0-h-1b"
-# model_path = "ibm-granite/granite-4.0-h-350m"
+#model_path = "ibm-granite/granite-4.0-h-1b"
+model_path = "ibm-granite/granite-4.0-h-350m"
 # model_path = "ibm-granite/granite-4.0-h-micro"
 
 print("Loading tokenizer and model...")

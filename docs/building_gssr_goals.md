@@ -680,7 +680,7 @@ This is the moment where the **Steering** we did during training (via `steer_pri
 
 ### Final Blueprint Summary
 
-We now have a complete(?) novel architecture:
+We now have semi-functional novel architecture:
 
 1. **`LBS`**: The world model that understands history, numbers, and text.
 2. **`GoalLBS`**: The control layer that nudges the world model toward a specific target.
