@@ -1,4 +1,4 @@
-# Building a Goal-Conditioned State Space
+# Building a GSSR's Goal State
 
 ## `LBS.__init__`: The Foundation
 

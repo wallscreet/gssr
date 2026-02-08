@@ -116,12 +116,14 @@ class LBS(nn.Module):
         # Ensuring inputs are tensors with batch dimensions [1, dim] to prevent broadcasting errors during concatenation.
         if y_t.dim() == 0:
             y_t = y_t.unsqueeze(0)
+            #debug_tensor(y_t, "filter y_t unsqueeze")
         if s_t.dim() == 1:
             s_t = s_t.unsqueeze(0)
         # DETERMINISTIC TRANSITION (RNN)
         # We pass the previous latent sample (x_prev) into the GRU. h_t now contains the "temporal context" updated with the latest step.
         gru_in = x_prev.unsqueeze(1)
         _, h_t = self.gru(gru_in, h_prev)
+        #debug_tensor(h_t, "Temporal Context h_t")
         # GENERATE THE PRIOR (The "Guess")
         # We use the GRU's current memory to predict the distribution of the next state.
         # We split (or chunk) the output into Mean (mu) and Log-Variance (logvar).
@@ -162,17 +164,18 @@ class LBS(nn.Module):
         # This creates "pseudo-tokens" that represent our belief state.
         #! exploding loss and kl div problem - lowering prefix_emb by an order of magnitude to observe consequence
         prefix_emb = self.proj_state(x_t).view(1, self.cfg.prefix_tokens, -1) * 0.1
+        #debug_tensor(prefix_emb, "LBS.text_loss prefix_emb")
         # TOKENIZE AND EMBED THE TARGET TEXT
         prompt = f"Given this belief state, generate a textual forecast.\nDate: 2025-01-01\n"
         full_prompt = prompt + text
         target_ids = self.tokenizer(full_prompt, return_tensors="pt").input_ids.to(self.device)
         # Convert IDs to their standard 1536-dim embeddings in the model.
         inputs_embeds = self.model.model.embed_tokens(target_ids)
-        debug_tensor(inputs_embeds, "inputs_embeds")
+        #debug_tensor(inputs_embeds, "LBS.text_loss inputs_embeds")
         # ATTACH THE LATENT STATE TO THE INPUT
         # We glue our latent-prefix to the front of the text embeddings.Now the LLM "sees" the latent state before it reads the prompt.
         inputs_embeds = torch.cat([prefix_emb, inputs_embeds], dim=1)
-        debug_tensor(inputs_embeds, "inputs_embeds after concat")
+        #debug_tensor(inputs_embeds, "LBS.text_loss inputs_embeds after concat")
         # ALIGN LABELS
         # We need to tell the loss function to ignore the prefix tokens when calculating error. We use -100 (the standard ignore_index in PyTorch) for the prefix positions.
         labels = target_ids.clone()
@@ -259,6 +262,7 @@ class GoalLBS(nn.Module):
         
         # Ensure we match the precision (bfloat16) and device (cuda)
         self.goal_encoder = self.goal_encoder.to(device=self.device, dtype=self.lbs.cfg.d_type)
+        debug_module(self.goal_encoder, "Goal Encoder")
 
         # Steering strength - how hard to pull toward goal (tunable)
         # High gamma = "The goal is everything, ignore reality."
@@ -275,9 +279,8 @@ class GoalLBS(nn.Module):
         prompt = f"Goal: {goal_text}\nSummarize the desired future state."
         input_ids = self.lbs.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
         # LLM PASS (FROZEN)
-        # We don't want to update the model here; we just want its interpretation on the goal.
-        with torch.no_grad():
-            hidden = self.lbs.model.model(input_ids=input_ids, output_hidden_states=True).hidden_states[-1]
+        hidden = self.lbs.model.model(input_ids=input_ids, output_hidden_states=True).hidden_states[-1]
+        #debug_tensor(hidden, "Goal.encode_goal hidden")
         # GLOBAL SUMMARIZATION
         # Take the last token's representation.
         goal_emb = hidden[0, -1, :]  # last token
@@ -321,37 +324,43 @@ class GoalLBS(nn.Module):
         """
         Executes one temporal step with latent "nudge" toward the goal and numerical stabilization.
         """
-        # 1. SEMANTIC ENCODING
+        # SEMANTIC ENCODING
         s_t = self.lbs.encode_text(text_t)
+        #debug_tensor(s_t, "Goal.foward_step Fwd s_t")
 
-        # 2. STATE TRANSITION
+        # STATE TRANSITION
         _, h_t = self.lbs.gru(x_prev.unsqueeze(1), h_prev)
+        #debug_tensor(h_t, "Goal.forward_step h_t")
         
-        # 3. GENERATE RAW PRIOR
-        prior_latent = h_t[-1] 
+        # GENERATE RAW PRIOR
+        prior_latent = h_t[-1]
+        #debug_tensor(prior_latent, "Goal.forward_step prior_latent")
         prior = self.lbs.mlp_prior(prior_latent)
+        #debug_tensor(prior, "Goal.forward_step prior")
         prior_mu, prior_logvar = prior.chunk(2, dim=-1)
         
         # STABILITY: Clamp log-variance to prevent division-by-zero in KL
         prior_logvar = torch.clamp(prior_logvar, min=-5.0, max=2.0)
 
-        # 4. APPLY THE STEERING
+        # APPLY THE STEERING
         steered_mu = self.steer_prior(prior_mu, x_goal, step, total_steps)
 
-        # 5. GENERATE POSTERIOR
+        # GENERATE POSTERIOR
         post_in = torch.cat([prior_latent, y_t, s_t], dim=-1)
+        #debug_tensor(post_in, "Goal.forward_step post_in")
         post = self.lbs.mlp_post(post_in)
+        #debug_tensor(post, "Goal.forward_step post")
         post_mu, post_logvar = post.chunk(2, dim=-1)
         
         # STABILITY: Clamp log-variance
         post_logvar = torch.clamp(post_logvar, min=-5.0, max=2.0)
 
-        # 6. REPARAMETERIZATION SAMPLE
+        # REPARAMETERIZATION SAMPLE
         std = torch.exp(0.5 * post_logvar)
         eps = torch.randn_like(std)
         x_t = post_mu + eps * std
 
-        # 7. ANALYTICAL KL CALCULATION (More stable than sampling)
+        # ANALYTICAL KL CALCULATION (More stable than sampling)
         prior_var = torch.exp(prior_logvar)
         post_var = torch.exp(post_logvar)
         
@@ -362,13 +371,13 @@ class GoalLBS(nn.Module):
             dim=-1
         )
 
-        # 8. LINEAR KL ANNEALING
+        # LINEAR KL ANNEALING
         # Ramp up alpha_kl over the first 500 steps to prevent 'KL Vanishing' or 'Explosion'
         warmup_steps = 500 
         anneal_ratio = min(1.0, current_epoch_step / warmup_steps)
         effective_alpha_kl = self.lbs.cfg.alpha_kl * anneal_ratio
 
-        # 9. MULTI-OBJECTIVE LOSS
+        # MULTI-OBJECTIVE LOSS
         L_val = self.lbs.value_loss(x_t, y_t.mean(dim=-1)).mean()
         
         # STABILITY: Scale x_t down so it doesn't overwhelm the LLM's attention mechanism
@@ -381,16 +390,18 @@ class GoalLBS(nn.Module):
                 self.lbs.cfg.alpha_text * L_text +
                 effective_alpha_kl * L_kl)
 
-        return (x_t if training else x_t.detach(), 
-                h_t if training else h_t.detach(), 
-                {
-                    'loss': loss, 
-                    'val': L_val.item(), 
-                    'text': L_text.item(), 
-                    'kl': L_kl.item(),
-                    'anneal': anneal_ratio
-                },
-                steered_mu)
+        return (
+            x_t if training else x_t.detach(),
+            h_t if training else h_t.detach(),
+            loss,  # explicit scalar loss first
+            {
+                'val': L_val.item(),
+                'text': L_text.item(),
+                'kl': L_kl.item(),
+                'anneal': anneal_ratio
+            },
+            steered_mu
+        )
 
     def generate_plan(self, x_final: torch.Tensor, steps_ahead: int = 5) -> str:
         plan = "Plan to achieve goal:\n"

@@ -80,7 +80,7 @@ def run_test():
     
     optimizer.step()
 
-    # 5. Inference Test (The Plan)
+    # Inference Test (The Plan)
     print("\nTesting Plan Generation (Latent Rollout)...")
     try:
         plan = goal_lbs.generate_plan(x_prev.squeeze(0), steps_ahead=2)

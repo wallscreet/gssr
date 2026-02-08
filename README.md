@@ -154,7 +154,7 @@ uv run gen.py
 
 uv run test_bench.py
 
-# uv run train.py (under construction)
+uv run train.py
 ```
 
 ---
