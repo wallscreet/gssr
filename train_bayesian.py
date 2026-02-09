@@ -94,4 +94,4 @@ def train_lbs(model_path="ibm-granite/granite-4.0-h-350m", epochs=10, seq_len=50
     print(plan)
 
 if __name__ == "__main__":
-    train_lbs(epochs=1, seq_len=8, lr=1e-4)
+    train_lbs(epochs=1, seq_len=12, lr=1e-4)

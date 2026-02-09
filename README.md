@@ -2,24 +2,32 @@
 
 **AGI is hiding in latent space.**
 
-This project explores **test-time adaptation** of hybrid State Space Models (SSMs) by injecting goal-conditioned perturbations directly into the recurrent latent states during inference. The goal is to steer model behavior toward desired outcomes without any weight updates and create a lightweight form of test-time fine-tuning that leverages the natural recurrence of SSMs.
+This project explores **test-time adaptation** of hybrid State Space Models (SSMs) by manipulating the recurrent latent states prior to or during during inference. The goal is to steer model behavior toward desired outcomes without any weight updates and create a lightweight form of test-time fine-tuning that leverages the natural recurrence of SSMs.
 
 ---
 
 ## Hypothesis
 
-> I hypothesize that test-time adaptation of hybrid State Space Models (SSMs), such as those in the IBM Granite-4.0 series, can be effectively achieved through goal-conditioned perturbations applied to recurrent latent states during inference. This approach could enable dynamic steering of model outputs toward desired behaviors without updating model parameters, thereby demonstrating a lightweight form of test-time fine-tuning that preserves training stability while enhancing adaptability to specific tasks or domains.
+> I hypothesize that test-time adaptation of hybrid State Space Models (SSMs), such as those in the IBM Granite-4.0 series, can be effectively achieved through `goal-conditioned perturbations applied to recurrent latent states` during inference **OR** by `mergine cached states prior to inferernce` or some combination thereof. This approach could enable dynamic steering of model outputs toward desired behaviors without updating model parameters, thereby demonstrating a lightweight form of test-time fine-tuning that preserves training stability while enhancing adaptability to specific tasks or domains.
 
 ---
 
 ## Core Idea
+
+### Perturbation (Steering)
 
 1. Extract recurrent SSM states from the Granite-4.0 hybrid model (Mamba-2 + sparse attention layers) during generation.
 2. Perturb selected late-layer states with a goal vector derived from prompt embeddings or refined belief states.
 3. Use gating, norm clamping, and annealing to stabilize steering.
 4. Observe how output trajectories shift: from coherent answers -> subtle drift -> repetition lock-in -> multilingual/code collapse at high strength.
 
-Early results show clear steering effects. Random perturbations already change behavior noticeably suggesting latent state manipulation is a viable control channel.
+Early results show clear steering effects but also inherent instability. Random perturbations already change behavior noticeably suggesting latent state manipulation is a viable control channel.
+
+### State Caching
+
+1. Extract recurrent SSM states from the Granite-4.0 hybrid model (Mamba-2 + sparse attention layers) during generation.
+2. Merge pre-cached state into prompt cache using a blend ratio for strength
+3. Generate response from merged cache
 
 ---
 
@@ -29,17 +37,13 @@ Early results show clear steering effects. Random perturbations already change b
 
 As a first step toward goal-conditioned latent steering (part of my research into GSSR), I hacked on IBM's Granite-4.0 hybrid model (Mamba-2 + attention), located the recurrent SSM states in the late layers, and perturbed them mid-generation with a simple random nudge. The output changed immediately from clean answers to repetition lock-in or foreign-code gibberish at higher strength.
 
-[Building the GSSR Goal Network](docs/building_gssr_goals.md)
+[Building a Bayesian GSSR Goal Network](docs/building_gssr_goals.md)
 
-Continuing the work from Hacking Granite-4.0-Hybrid (above), this write-up talks through the process of creating and conditioning the goal state to apply to a hybrid transformer-ssm model to steer model outputs in pusuit of a viable test-time fine-tuning strategy.
+Continuing the work from Hacking Granite-4.0-Hybrid (above), this write-up talks through the process of creating and conditioning the goal state to apply as perturbations to selected states in a hybrid transformer-ssm model to steer model outputs in pusuit of a viable test-time fine-tuning strategy.
+
+[Goal-Conditioned State Caching](docs/goal_state_caching.md)
 
 ## Key Components
-
-### Goal.py
-
-- **LBS (Latent Belief System)**: A lightweight Bayesian SSM filter (GRU + variational posterior) that refines a latent state using numerical observations and semantic summaries from the LLM.
-- **GoalLBS**: Adds goal encoding and steering logic that encodes target text into a latent goal vector, steers the prior belief toward it with gated proportional correction, and clamps norms to prevent divergence.
-- **Perturber integration**: Captures refined states and injects them as goal vectors into Granite SSM states during inference.
 
 ### Main.py
 
@@ -87,6 +91,13 @@ Found 'ssm_states': type=<class 'list'>, length=32
   ...
 ```
 
+### Goal.py
+
+- **Bayesian Steering Module**
+- **LBS (Latent Belief System)**: A lightweight Bayesian SSM filter (GRU + variational posterior) that refines a latent state using numerical observations and semantic summaries from the LLM.
+- **GoalLBS**: Adds goal encoding and steering logic that encodes target text into a latent goal vector, steers the prior belief toward it with gated proportional correction, and clamps norms to prevent divergence.
+- **Perturber integration**: Captures refined states and injects them as goal vectors into Granite SSM states during inference.
+
 ### Gen.py
 
 - **Proof of Concept** - This module demonstrates the ability to effectively reach into the model itself and apply a random perturbation to later mamba layers to affect the output of the model. Module will print `Unsteered Output` and `Steered Output`
@@ -119,6 +130,12 @@ Step 1: 2
 )
 Step 2:  during that this and the process, you are using.
 ```
+
+### Cache_Sandbox.py
+
+- **Cached State Experiments** - This module enables experimentation in local generation with and without `past_key_values` (cached states).
+- **Creates a LocalModel Class** with methods; `_prepare_inputs`, `summarize_and_capture_state`, `generate` and `generate_using_cache`.
+- **Explores Differences in Responses**
 
 All operations are external — no model weights are modified.
 

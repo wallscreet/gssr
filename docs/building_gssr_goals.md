@@ -1,4 +1,4 @@
-# Building a GSSR's Goal State
+# Building a Bayesian GSSR Goal State
 
 ## `LBS.__init__`: The Foundation
 
